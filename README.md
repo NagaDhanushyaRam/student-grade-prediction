@@ -8,7 +8,7 @@ Predict whether a student will **Pass/Fail** based on formative assessments and 
 ---
 
 ## 👥 Team Members
-- **Naga Dhanushya Ram Munnanuru (Coordinator – A1)**  
+- **Naga Dhanushya Ram Munnanuru**  
 - **Stephen Aboagye-Ntow**  
 - **Muhammad Adam**  
 - **Ayandayo Adeleke**  
