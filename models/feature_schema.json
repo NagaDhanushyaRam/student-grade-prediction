@@ -1,0 +1,237 @@
+[
+  {
+    "name": "Student_ID",
+    "type": "dropdown",
+    "choices": [
+      "S1000",
+      "S1001",
+      "S1002",
+      "S1003",
+      "S1004",
+      "S1005",
+      "S1006",
+      "S1007",
+      "S1008",
+      "S1009",
+      "S1010",
+      "S1011",
+      "S1012",
+      "S1013",
+      "S1014",
+      "S1015",
+      "S1016",
+      "S1017",
+      "S1018",
+      "S1019",
+      "S1020",
+      "S1021",
+      "S1022",
+      "S1023",
+      "S1024",
+      "S1025",
+      "S1026",
+      "S1027",
+      "S1028",
+      "S1029",
+      "S1030",
+      "S1031",
+      "S1032",
+      "S1033",
+      "S1034",
+      "S1035",
+      "S1036",
+      "S1037",
+      "S1038",
+      "S1039",
+      "S1040",
+      "S1041",
+      "S1042",
+      "S1043",
+      "S1044",
+      "S1045",
+      "S1046",
+      "S1047",
+      "S1048",
+      "S1049"
+    ]
+  },
+  {
+    "name": "First_Name",
+    "type": "dropdown",
+    "choices": [
+      "Ahmed",
+      "Ali",
+      "Emma",
+      "John",
+      "Liam",
+      "Maria",
+      "Omar",
+      "Sara"
+    ]
+  },
+  {
+    "name": "Last_Name",
+    "type": "dropdown",
+    "choices": [
+      "Brown",
+      "Davis",
+      "Johnson",
+      "Jones",
+      "Smith",
+      "Williams"
+    ]
+  },
+  {
+    "name": "Email",
+    "type": "dropdown",
+    "choices": [
+      "student0@university.com",
+      "student1000@university.com",
+      "student1001@university.com",
+      "student1002@university.com",
+      "student1003@university.com",
+      "student1004@university.com",
+      "student1005@university.com",
+      "student1006@university.com",
+      "student1007@university.com",
+      "student1008@university.com",
+      "student1009@university.com",
+      "student100@university.com",
+      "student1010@university.com",
+      "student1011@university.com",
+      "student1012@university.com",
+      "student1013@university.com",
+      "student1014@university.com",
+      "student1015@university.com",
+      "student1016@university.com",
+      "student1017@university.com",
+      "student1018@university.com",
+      "student1019@university.com",
+      "student101@university.com",
+      "student1020@university.com",
+      "student1021@university.com",
+      "student1022@university.com",
+      "student1023@university.com",
+      "student1024@university.com",
+      "student1025@university.com",
+      "student1026@university.com",
+      "student1027@university.com",
+      "student1028@university.com",
+      "student1029@university.com",
+      "student102@university.com",
+      "student1030@university.com",
+      "student1031@university.com",
+      "student1032@university.com",
+      "student1033@university.com",
+      "student1034@university.com",
+      "student1035@university.com",
+      "student1036@university.com",
+      "student1037@university.com",
+      "student1038@university.com",
+      "student1039@university.com",
+      "student103@university.com",
+      "student1040@university.com",
+      "student1041@university.com",
+      "student1042@university.com",
+      "student1043@university.com",
+      "student1044@university.com"
+    ]
+  },
+  {
+    "name": "Gender",
+    "type": "dropdown",
+    "choices": [
+      "Female",
+      "Male"
+    ]
+  },
+  {
+    "name": "Age",
+    "type": "number"
+  },
+  {
+    "name": "Department",
+    "type": "dropdown",
+    "choices": [
+      "Business",
+      "CS",
+      "Engineering",
+      "Mathematics"
+    ]
+  },
+  {
+    "name": "Attendance (%)",
+    "type": "number"
+  },
+  {
+    "name": "Midterm_Score",
+    "type": "number"
+  },
+  {
+    "name": "Final_Score",
+    "type": "number"
+  },
+  {
+    "name": "Assignments_Avg",
+    "type": "number"
+  },
+  {
+    "name": "Quizzes_Avg",
+    "type": "number"
+  },
+  {
+    "name": "Participation_Score",
+    "type": "number"
+  },
+  {
+    "name": "Projects_Score",
+    "type": "number"
+  },
+  {
+    "name": "Study_Hours_per_Week",
+    "type": "number"
+  },
+  {
+    "name": "Extracurricular_Activities",
+    "type": "dropdown",
+    "choices": [
+      "No",
+      "Yes"
+    ]
+  },
+  {
+    "name": "Internet_Access_at_Home",
+    "type": "dropdown",
+    "choices": [
+      "No",
+      "Yes"
+    ]
+  },
+  {
+    "name": "Parent_Education_Level",
+    "type": "dropdown",
+    "choices": [
+      "Bachelor's",
+      "High School",
+      "Master's",
+      "PhD"
+    ]
+  },
+  {
+    "name": "Family_Income_Level",
+    "type": "dropdown",
+    "choices": [
+      "High",
+      "Low",
+      "Medium"
+    ]
+  },
+  {
+    "name": "Stress_Level (1-10)",
+    "type": "number"
+  },
+  {
+    "name": "Sleep_Hours_per_Night",
+    "type": "number"
+  }
+]
