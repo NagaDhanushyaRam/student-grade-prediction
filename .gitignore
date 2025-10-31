@@ -1,0 +1,43 @@
+# --- Python / build
+__pycache__/
+*.py[cod]
+*.egg-info/
+.build/
+dist/
+.eggs/
+
+# --- Environments / tools
+.venv/
+.env
+.env.* 
+venv/
+.conda/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# --- OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Streamlit
+.streamlit/secrets.toml
+
+# --- SQLite (keep DB local; recreate from schema)
+edutrack.db
+
+# --- Models (keep schema JSON tracked, ignore large/binary by default)
+models/*.pkl
+# If you intentionally want to commit a small demo model, comment the line above.
+
+# --- Data (keep sample CSV tracked, ignore large/raw dumps)
+data/*.parquet
+data/*.feather
+data/*.zip
+data/*.7z
+
+# --- Logs / cache
+*.log
+logs/
+.cache/
