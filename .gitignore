@@ -76,9 +76,3 @@ data/*.gz
 *.log
 logs/
 .cache/
-
-# ======================
-# Temporary / Misc
-# ======================
-NUL
-
