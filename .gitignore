@@ -1,31 +1,84 @@
-# Python
+# ======================
+# Python / Build Artifacts
+# ======================
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 *.egg-info/
+.eggs/
+.build/
+dist/
 .ipynb_checkpoints/
+.pytest_cache/
 
-# Envs & IDE
+# ======================
+# Environments / Tools
+# ======================
 .venv/
 venv/
 .env
+.env.*
+.conda/
+requirements.txt~
+environment.yml~
+
+# ======================
+# IDE / OS
+# ======================
 .vscode/*
 !.vscode/settings.json
 .idea/
-
-# OS
 .DS_Store
+Thumbs.db
 
-# SQLite & local state
+# ======================
+# Streamlit
+# ======================
+.streamlit/secrets.toml
+
+# ======================
+# SQLite / Local DBs
+# (keep schema.sql tracked, ignore actual runtime data)
+# ======================
 *.db
 *.db-wal
 *.db-shm
 db/*.db
 db/*.sqlite
+edutrack.db
 
-# Data (keep large/raw out of repo)
-data/
+# ======================
+# Models
+# Keep feature_schema.json but ignore binary models
+# ======================
+models/*.pkl
+models/*.joblib
+# Uncomment below if you want to ignore all models completely
+# models/*
 
-# Streamlit secrets (if you add them later)
-.streamlit/secrets.toml
+# ======================
+# Data
+# Keep small sample CSVs, ignore large/raw dumps
+# ======================
+data/*.csv
+data/*.xlsx
+data/*.parquet
+data/*.feather
+data/*.zip
+data/*.7z
+data/*.tar
+data/*.gz
+
+# ======================
+# Logs / Cache
+# ======================
+*.log
+logs/
+.cache/
+
+# ======================
+# Temporary / Misc
+# ======================
+NUL
+

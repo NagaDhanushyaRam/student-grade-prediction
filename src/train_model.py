@@ -166,7 +166,7 @@ def main():
 
     # Register model in DB
     register_model(
-        model_name=MODEL_NAME,          # <-- was name=...
+        name=MODEL_NAME,
         version=VERSION,
         path=str(model_path),
         columns_path=str(cols_path),
