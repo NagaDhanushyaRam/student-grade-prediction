@@ -3,8 +3,8 @@
         {
             "previewLimit": 50,
             "driver": "SQLite",
-            "database": "${workspaceFolder:student-grade-prediction}/db/app.db",
-            "name": "student-grade-sqlite"
+            "name": "student-grade-prediction",
+            "database": "${workspaceFolder:student-grade-prediction}/db/app.db"
         }
     ],
     "sqltools.useNodeRuntime": true

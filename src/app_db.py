@@ -1,171 +1,392 @@
-import os, json
-from typing import Optional, Dict, Any
+# app_db.py
+import os
+import json
+import hashlib
+import hmac
+from datetime import datetime
 from pathlib import Path
+from typing import Optional, Dict, Any
+from datetime import datetime
 
-from passlib.hash import bcrypt_sha256
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, event
 from sqlalchemy.engine import Engine
 
-# --- Paths: use the actual app.db inside the db/ folder
-ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = os.getenv("EDUTRACK_DB", str(ROOT / "db" / "app.db"))
-SCHEMA_PATH = str(ROOT / "db" / "schema.sql")
+# ---------------------------------------------------------
+# Paths / Engine
+# ---------------------------------------------------------
+ROOT = Path(__file__).resolve().parents[1]  # project root
+DB_DIR = ROOT / "db"
+DB_DIR.mkdir(parents=True, exist_ok=True)
+DB_FILE = os.path.abspath(os.getenv("EDUTRACK_DB", str(DB_DIR / "app.db")))
+DB_URL = f"sqlite:///{DB_FILE}"
+
+# A small pepper so hashes aren't plain SHA256(password)
+_PWD_PEPPER = "edutrack_pepper_2025"
+
 
 def get_engine() -> Engine:
-    # sqlite URL must be absolute for reliability
-    return create_engine(f"sqlite:///{os.path.abspath(DB_PATH)}", future=True)
+    eng = create_engine(
+        DB_URL,
+        future=True,
+        connect_args={
+            "timeout": 15,
+            "check_same_thread": False,  # allow threads (Streamlit)
+        },
+        pool_pre_ping=True,
+    )
+
+    # Ensure FK enforcement on every connection
+    @event.listens_for(eng, "connect")
+    def _set_sqlite_pragma(dbapi_conn, _):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON;")
+        cur.close()
+
+    return eng
+
+
+# ---------------------------------------------------------
+# Password helpers (simple salted/peppered SHA256)
+# ---------------------------------------------------------
+def hash_pw(raw: str) -> str:
+    raw = (raw or "").encode("utf-8")
+    return hashlib.sha256(_PWD_PEPPER.encode("utf-8") + raw).hexdigest()
+
+
+def verify_pw(raw: str, digest: str) -> bool:
+    calc = hash_pw(raw)
+    return hmac.compare_digest(calc, digest or "")
+
+
+
 
 def ensure_schema() -> None:
-    """
-    Apply schema.sql using the raw sqlite3 connection so we can call executescript().
-    """
-    engine = get_engine()
-    with engine.begin() as _:
-        pass  # just ensures file/dir exists
+    eng = get_engine()
+    schema_path = ROOT / "db" / "schema.sql"
+    with eng.begin() as conn:
+        if eng.dialect.name == "sqlite":
+            with open(schema_path, "r", encoding="utf-8") as f:
+                conn.connection.executescript(f.read())
+        else:
+            # For non-SQLite engines (future-proof)
+            stmts = [s.strip() for s in open(schema_path, "r", encoding="utf-8").read().split(";") if s.strip()]
+            for s in stmts:
+                conn.exec_driver_sql(s)
 
-    raw = engine.raw_connection()  # sqlite3 connection
-    try:
-        with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
-            raw.executescript(f.read())
-        raw.commit()
-    finally:
-        raw.close()
 
-def hash_pw(plain: str) -> str:
-    return bcrypt_sha256.hash(plain)
-
-def verify_pw(pw: str, pw_hash: str) -> bool:
-    return bcrypt_sha256.verify(pw, pw_hash)
-
-def create_user(name: str, email: str, password: str, role: str) -> int:
+# ---------------------------------------------------------
+# Users
+# ---------------------------------------------------------
+def any_admin_exists() -> bool:
     with get_engine().begin() as conn:
-        res = conn.execute(text("""
-            INSERT INTO users(name, email, password_hash, role)
-            VALUES (:n, :e, :p, :r)
-        """), {"n": name, "e": email, "p": hash_pw(password), "r": role.upper()})
-        return res.lastrowid
+        v = conn.execute(text("SELECT 1 FROM users WHERE role='ADMIN' LIMIT 1")).scalar()
+        return v is not None
+
 
 def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
     with get_engine().begin() as conn:
-        row = conn.execute(text("SELECT * FROM users WHERE email=:e"),
-                           {"e": email}).mappings().first()
+        row = conn.execute(
+            text("SELECT * FROM users WHERE email=:e LIMIT 1"),
+            {"e": email},
+        ).mappings().first()
         return dict(row) if row else None
 
-def create_student(user_id: int, gpa: float=None, department: str=None, status: str="ACTIVE") -> int:
-    with get_engine().begin() as conn:
-        res = conn.execute(text("""
-            INSERT INTO students(user_id, gpa, department, status)
-            VALUES(:u, :g, :d, :s)
-        """), {"u": user_id, "g": gpa, "d": department, "s": status})
-        return res.lastrowid
 
-def create_teacher(user_id: int, department: str=None) -> int:
+def create_user(name: str, email: str, password: str, role: str) -> int:
+    digest = hash_pw(password)
     with get_engine().begin() as conn:
-        res = conn.execute(text(
-            "INSERT INTO teachers(user_id, department) VALUES(:u, :d)"
-        ), {"u": user_id, "d": department})
-        return res.lastrowid
+        r = conn.execute(
+            text("""
+                INSERT INTO users(name, email, password_hash, role)
+                VALUES (:n, :e, :p, :r)
+            """),
+            {"n": name, "e": email, "p": digest, "r": role},
+        )
+        return int(r.lastrowid)
 
-def upsert_academic_record(student_id: int, term: str,
-                           attendance: float=None, study_hours: float=None,
-                           exam_score: float=None, stress_level: int=None,
-                           sleep_hours: float=None, participation: float=None,
-                           extra: Optional[Dict[str, Any]]=None,
-                           created_by: Optional[int]=None) -> int:
-    extra_json = json.dumps(extra or {}, ensure_ascii=False)
+
+# ---------------------------------------------------------
+# Departments helper
+# ---------------------------------------------------------
+def _ensure_department(conn, dept_name: Optional[str]) -> Optional[int]:
+    if not dept_name:
+        return None
+    dept_name = dept_name.strip()
+    if not dept_name:
+        return None
+    # upsert department by name
+    conn.execute(
+        text("INSERT INTO departments(name) VALUES (:n) ON CONFLICT(name) DO NOTHING"),
+        {"n": dept_name},
+    )
+    did = conn.execute(
+        text("SELECT department_id FROM departments WHERE name=:n"),
+        {"n": dept_name},
+    ).scalar()
+    return int(did) if did else None
+
+
+# ---------------------------------------------------------
+# Create Teacher / Student (full)
+# ---------------------------------------------------------
+def create_teacher_full(name: str, email: str, password: str, dept_name: Optional[str]) -> int:
     with get_engine().begin() as conn:
-        upd = conn.execute(text("""
-            UPDATE student_academic_data
-               SET attendance=:a, study_hours=:sh, exam_score=:es, stress_level=:sl,
-                   sleep_hours=:slp, participation=:p, extra_json=:x
-             WHERE student_id=:sid AND term=:t
-        """), {"a": attendance, "sh": study_hours, "es": exam_score, "sl": stress_level,
-               "slp": sleep_hours, "p": participation, "x": extra_json,
-               "sid": student_id, "t": term})
-        if upd.rowcount == 0:
-            res = conn.execute(text("""
-                INSERT INTO student_academic_data
-                  (student_id, term, attendance, study_hours, exam_score, stress_level,
-                   sleep_hours, participation, extra_json, created_by)
-                VALUES (:sid, :t, :a, :sh, :es, :sl, :slp, :p, :x, :cb)
-            """), {"sid": student_id, "t": term, "a": attendance, "sh": study_hours,
-                   "es": exam_score, "sl": stress_level, "slp": sleep_hours,
-                   "p": participation, "x": extra_json, "cb": created_by})
-            return res.lastrowid
-        rid = conn.execute(text("""
-            SELECT data_id FROM student_academic_data
-            WHERE student_id=:sid AND term=:t
-        """), {"sid": student_id, "t": term}).scalar_one()
-        return rid
+        # user
+        uid = conn.execute(
+            text("""INSERT INTO users(name, email, password_hash, role)
+                    VALUES (:n,:e,:p,'TEACHER')"""),
+            {"n": name, "e": email, "p": hash_pw(password)},
+        ).lastrowid
+
+        did = _ensure_department(conn, dept_name)
+
+        tid = conn.execute(
+            text("""INSERT INTO teachers(user_id, department_id)
+                    VALUES (:u, :d)"""),
+            {"u": uid, "d": did},
+        ).lastrowid
+        return int(tid)
+
+
+def create_student_full(
+    name: str, email: str, password: str,
+    academic_year: Optional[str], age: Optional[int], gender: Optional[str],
+    external_student_id: Optional[str], dept_name: Optional[str],
+    gpa: Optional[float], assigned_teacher_id: Optional[int]
+) -> int:
+    with get_engine().begin() as conn:
+        uid = conn.execute(
+            text("""INSERT INTO users(name, email, password_hash, role)
+                    VALUES (:n,:e,:p,'STUDENT')"""),
+            {"n": name, "e": email, "p": hash_pw(password)},
+        ).lastrowid
+
+        did = _ensure_department(conn, dept_name)
+
+        sid = conn.execute(
+            text("""
+                INSERT INTO students(
+                    user_id, academic_year, age, gender, external_student_id,
+                    department_id, assigned_teacher_id, gpa
+                ) VALUES (:u,:ay,:age,:g,:ext,:d,:t,:gpa)
+            """),
+            {
+                "u": uid, "ay": academic_year, "age": age, "g": gender,
+                "ext": external_student_id, "d": did,
+                "t": assigned_teacher_id, "gpa": gpa,
+            },
+        ).lastrowid
+        return int(sid)
+
+
+# ---------------------------------------------------------
+# Academic records
+# ---------------------------------------------------------
+def upsert_academic_record(
+    actor_role: str,
+    actor_user_id: int,
+    student_id: int,
+    term: str,
+    attendance: Optional[float],
+    study_hours: Optional[float],
+    examScores: Optional[float],
+    stress_level: Optional[int],
+    sleep_hours: Optional[float],
+    participation: Optional[float],
+    extra: Optional[Dict[str, Any]],
+) -> int:
+    """
+    Upsert by (student_id, term) and return data_id.
+    """
+    payload = json.dumps(extra or {}, ensure_ascii=False)
+
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO student_academic_data (
+                    student_id, term, attendance, study_hours, examScores,
+                    stress_level, sleep_hours, participation, extra_json
+                ) VALUES (
+                    :sid, :term, :att, :sh, :ex, :st, :sl, :part, :extra
+                )
+                ON CONFLICT(student_id, term) DO UPDATE SET
+                    attendance   = excluded.attendance,
+                    study_hours  = excluded.study_hours,
+                    examScores   = excluded.examScores,
+                    stress_level = excluded.stress_level,
+                    sleep_hours  = excluded.sleep_hours,
+                    participation= excluded.participation,
+                    extra_json   = excluded.extra_json
+            """),
+            {
+                "sid": int(student_id),
+                "term": term,
+                "att": attendance,
+                "sh": study_hours,
+                "ex": examScores,
+                "st": stress_level,
+                "sl": sleep_hours,
+                "part": participation,
+                "extra": payload,
+            },
+        )
+
+        did = conn.execute(
+            text("""
+                SELECT data_id
+                  FROM student_academic_data
+                 WHERE student_id=:sid AND term=:term
+            """),
+            {"sid": int(student_id), "term": term},
+        ).scalar()
+
+        return int(did)
+
 
 def get_latest_record(student_id: int) -> Optional[Dict[str, Any]]:
     with get_engine().begin() as conn:
-        row = conn.execute(text("""
-            SELECT * FROM student_academic_data
-            WHERE student_id=:sid ORDER BY data_id DESC LIMIT 1
-        """), {"sid": student_id}).mappings().first()
-        if not row:
+        r = conn.execute(
+            text("""
+                SELECT data_id, student_id, term, attendance, study_hours, examScores,
+                       stress_level, sleep_hours, participation, extra_json, created_at
+                  FROM student_academic_data
+                 WHERE student_id = :sid
+              ORDER BY data_id DESC
+                 LIMIT 1
+            """),
+            {"sid": int(student_id)},
+        ).mappings().first()
+
+        if not r:
             return None
-        d = dict(row)
+
+        extra = {}
         try:
-            d["extra"] = json.loads(d.get("extra_json") or "{}")
+            extra = json.loads(r.get("extra_json") or "{}")
         except Exception:
-            d["extra"] = {}
-        return d
+            pass
 
-def register_model(name: str, version: str, path: str, columns_path: str,
-                   accuracy: float=None, f1: float=None, roc_auc: float=None) -> int:
-    with get_engine().begin() as conn:
-        res = conn.execute(text("""
-            INSERT INTO ml_models(name, version, path, columns_path, accuracy, f1_score, roc_auc)
-            VALUES (:n,:v,:p,:c,:a,:f,:r)
-        """), {"n": name, "v": version, "p": path, "c": columns_path,
-               "a": accuracy, "f": f1, "r": roc_auc})
-        return res.lastrowid
+        return {
+            "data_id": r["data_id"],
+            "student_id": r["student_id"],
+            "term": r["term"],
+            "attendance": r["attendance"],
+            "study_hours": r["study_hours"],
+            "examScores": r["examScores"],
+            "stress_level": r["stress_level"],
+            "sleep_hours": r["sleep_hours"],
+            "participation": r["participation"],
+            "extra": extra,
+            "created_at": r["created_at"],
+        }
 
+
+# ---------------------------------------------------------
+# Model registry
+# ---------------------------------------------------------
 def latest_model(name: str) -> Optional[Dict[str, Any]]:
     with get_engine().begin() as conn:
-        row = conn.execute(text("""
-            SELECT * FROM ml_models WHERE name=:n
-            ORDER BY model_id DESC LIMIT 1
-        """), {"n": name}).mappings().first()
-        return dict(row) if row else None
+        r = conn.execute(
+            text("""
+                SELECT model_id, model_name, version, path, columns_path, created_at
+                  FROM ml_models
+                 WHERE model_name = :n
+              ORDER BY model_id DESC
+                 LIMIT 1
+            """),
+            {"n": name},
+        ).mappings().first()
+        return dict(r) if r else None
 
-def save_prediction(student_id: int, model_id: int, term: str,
-                    label: str, pass_prob: float, fail_prob: float) -> int:
+def register_model(
+    name: Optional[str] = None,
+    model_name: Optional[str] = None,
+    model_path: str = "",
+    columns_path: str = "",
+    version: Optional[str] = None,   # <— NEW
+    **metrics,
+) -> int:
+    final_name = (name or model_name or "").strip()
+    if not final_name:
+        raise ValueError("register_model: `name` or `model_name` is required")
+    if not model_path or not columns_path:
+        raise ValueError("register_model: `model_path` and `columns_path` are required")
+
+    # Default version if caller doesn’t pass one (timestamp so it’s always unique)
+    ver = (version or datetime.now().strftime("%Y%m%d%H%M%S")).strip()
+
     with get_engine().begin() as conn:
-        res = conn.execute(text("""
-            INSERT INTO prediction_results(student_id, model_id, term, predicted_label, pass_prob, fail_prob)
-            VALUES (:sid,:mid,:t,:lbl,:pp,:fp)
-            ON CONFLICT(student_id, model_id, term) DO UPDATE SET
-               predicted_label=excluded.predicted_label,
-               pass_prob=excluded.pass_prob,
-               fail_prob=excluded.fail_prob
-        """), {"sid": student_id, "mid": model_id, "t": term,
-               "lbl": label, "pp": pass_prob, "fp": fail_prob})
-        if res.lastrowid:
-            return res.lastrowid
-        pid = conn.execute(text("""
-            SELECT prediction_id FROM prediction_results
-            WHERE student_id=:sid AND model_id=:mid AND term=:t
-        """), {"sid": student_id, "mid": model_id, "t": term}).scalar_one()
-        return pid
-
-def add_recommendation(student_id: int, prediction_id: int, typ: str, message: str) -> int:
+        r = conn.execute(
+            text("""
+                INSERT INTO ml_models (model_name, version, path, columns_path)
+                VALUES (:n, :v, :p, :c)
+                ON CONFLICT(model_name, version) DO UPDATE SET
+                    path = excluded.path,
+                    columns_path = excluded.columns_path,
+                    created_at = datetime('now')
+            """),
+            {"n": final_name, "v": ver, "p": model_path, "c": columns_path},
+        )
+        return int(r.lastrowid or conn.execute(
+            text("SELECT model_id FROM ml_models WHERE model_name=:n AND version=:v"),
+            {"n": final_name, "v": ver},
+        ).scalar())
+    
+# ---------------------------------------------------------
+# Permissions helpers
+# ---------------------------------------------------------
+def can_run_prediction(role: str, user_id: int, student_id: int, conn) -> bool:
     """
-    Insert a recommendation record into the recommendations table.
+    Use the provided open connection to keep things consistent with callers.
     """
-    with get_engine().begin() as conn:
-        res = conn.execute(text("""
-            INSERT INTO recommendations(student_id, prediction_id, type, message)
-            VALUES (:sid, :pid, :ty, :msg)
-        """), {"sid": student_id, "pid": prediction_id, "ty": typ, "msg": message})
-        return res.lastrowid
+    role = (role or "").upper()
+    if role == "ADMIN":
+        return True
+    if role == "STUDENT":
+        # student can run for themselves
+        v = conn.execute(
+            text("""
+                SELECT 1
+                  FROM students s
+                  JOIN users u ON u.user_id = s.user_id
+                 WHERE s.student_id = :sid AND u.user_id = :uid
+            """),
+            {"sid": int(student_id), "uid": int(user_id)},
+        ).scalar()
+        return v is not None
+    if role == "TEACHER":
+        # teacher must be assigned to that student
+        v = conn.execute(
+            text("""
+                SELECT 1
+                  FROM students s
+                  JOIN teachers t ON t.teacher_id = s.assigned_teacher_id
+                  JOIN users tu    ON tu.user_id = t.user_id
+                 WHERE s.student_id = :sid AND tu.user_id = :uid
+            """),
+            {"sid": int(student_id), "uid": int(user_id)},
+        ).scalar()
+        return v is not None
+    return False
 
-if __name__ == "__main__":
-    ensure_schema()
-    with get_engine().begin() as c:
-        tables = c.execute(text(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"
-        )).scalars().all()
-    print("Tables:", tables)
+
+def teacher_choices(conn) -> Dict[str, int]:
+    """
+    Build label -> teacher_id for the teacher picker.
+    Uses the provided open connection.
+    """
+    rows = conn.execute(
+        text("""
+            SELECT t.teacher_id, u.name AS tname, COALESCE(d.name,'') AS dname
+              FROM teachers t
+              JOIN users u ON u.user_id = t.user_id
+         LEFT JOIN departments d ON d.department_id = t.department_id
+          ORDER BY u.name
+        """)
+    ).mappings().all()
+
+    mapping: Dict[str, int] = {}
+    for r in rows:
+        label = f"{r['tname']} ({r['dname']})" if r["dname"] else r["tname"]
+        mapping[label] = int(r["teacher_id"])
+    return mapping

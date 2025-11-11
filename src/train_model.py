@@ -3,6 +3,7 @@ import os
 import json
 import math
 from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -22,7 +23,8 @@ from src.app_db import ensure_schema, register_model
 # Config
 # ------------------------
 MODEL_NAME = "student_grade_predictor"
-VERSION = "1.0"
+# Unique version each run (override with env MODEL_VERSION="v1" if you want fixed)
+VERSION = os.getenv("MODEL_VERSION", datetime.now().strftime("%Y%m%d%H%M%S"))
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -31,7 +33,8 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Try to discover the dataset automatically to avoid path typos
 CANDIDATE_DATASETS = [
-    "Students_Performance_Dataset.csv"]
+    "Students_Performance_Dataset.csv",
+]
 DATA_PATH = None
 for _name in CANDIDATE_DATASETS:
     p = DATA_DIR / _name
@@ -164,20 +167,21 @@ def main():
     with open(cols_path, "w", encoding="utf-8") as f:
         json.dump(feature_schema, f, indent=2, ensure_ascii=False)
 
-    # Register model in DB
-    register_model(
-        name=MODEL_NAME,
-        version=VERSION,
-        path=str(model_path),
-        columns_path=str(cols_path),
-        accuracy=None if acc is None else float(acc),
-        f1=None if f1 is None else float(f1),
-        roc_auc=None if roc is None else float(roc),
+    # Register model in DB (now with version)
+    model_id = register_model(
+        model_name=MODEL_NAME,
+        version=VERSION,  # <-- IMPORTANT: satisfies NOT NULL + UNIQUE(model_name, version)
+        model_path=str(model_path.relative_to(ROOT)).replace("\\", "/"),
+        columns_path=str(cols_path.relative_to(ROOT)).replace("\\", "/"),
+        accuracy=float(acc),
+        f1=float(f1),
+        roc_auc=float(roc) if roc is not None else None,
     )
 
     # Logs
     print(f"✅ Saved model to {model_path}")
     print(f"✅ Saved schema to {cols_path}")
+    print(f"✅ Registered model_id={model_id}, name={MODEL_NAME}, version={VERSION}")
     print(f"Metrics -> acc={fmt(acc)}, f1={fmt(f1)}, roc_auc={fmt(roc)}")
 
 
