@@ -86,7 +86,7 @@ def any_admin_exists() -> bool:
 def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
     with get_engine().begin() as conn:
         row = conn.execute(
-            text("SELECT * FROM users WHERE email=:e LIMIT 1"),
+            text("SELECT * FROM users WHERE LOWER(email)=:e LIMIT 1"),
             {"e": email},
         ).mappings().first()
         return dict(row) if row else None
@@ -390,3 +390,205 @@ def teacher_choices(conn) -> Dict[str, int]:
         label = f"{r['tname']} ({r['dname']})" if r["dname"] else r["tname"]
         mapping[label] = int(r["teacher_id"])
     return mapping
+
+# ============================================
+# NEW: PERFORMANCE REPORT HELPERS (ADMIN)
+# ============================================
+
+def get_site_performance_summary() -> dict:
+    """
+    High-level performance metrics across the whole site.
+    Returns a dict with keys:
+      total_students, total_teachers, avg_gpa,
+      avg_attendance, pass_count, fail_count
+    """
+    eng = get_engine()
+    with eng.begin() as conn:
+        row = conn.execute(text("""
+            SELECT
+              COUNT(DISTINCT s.student_id)                      AS total_students,
+              COUNT(DISTINCT t.teacher_id)                      AS total_teachers,
+              AVG(s.gpa)                                        AS avg_gpa,
+              AVG(a.attendance)                                 AS avg_attendance,
+              SUM(CASE WHEN pr.predictedStatus = 'PASS' THEN 1 ELSE 0 END) AS pass_count,
+              SUM(CASE WHEN pr.predictedStatus = 'FAIL' THEN 1 ELSE 0 END) AS fail_count
+            FROM students s
+            LEFT JOIN student_academic_data a
+                   ON a.student_id = s.student_id
+            LEFT JOIN prediction_results pr
+                   ON pr.student_id = s.student_id
+            LEFT JOIN teachers t
+                   ON t.teacher_id = s.assigned_teacher_id
+        """)).mappings().first()
+
+    return dict(row) if row else {}
+
+
+def get_department_performance() -> list[dict]:
+    """
+    Department-level performance metrics.
+    Each dict has keys:
+      department, total_students, avg_gpa,
+      avg_attendance, pass_count, fail_count
+    """
+    eng = get_engine()
+    with eng.begin() as conn:
+        rows = conn.execute(text("""
+            SELECT
+              d.name                                           AS department,
+              COUNT(DISTINCT s.student_id)                     AS total_students,
+              AVG(s.gpa)                                       AS avg_gpa,
+              AVG(a.attendance)                                AS avg_attendance,
+              SUM(CASE WHEN pr.predictedStatus = 'PASS' THEN 1 ELSE 0 END) AS pass_count,
+              SUM(CASE WHEN pr.predictedStatus = 'FAIL' THEN 1 ELSE 0 END) AS fail_count
+            FROM departments d
+            LEFT JOIN students s
+                   ON s.department_id = d.department_id
+            LEFT JOIN student_academic_data a
+                   ON a.student_id = s.student_id
+            LEFT JOIN prediction_results pr
+                   ON pr.student_id = s.student_id
+            GROUP BY d.department_id, d.name
+            ORDER BY d.name
+        """)).mappings().all()
+
+    return [dict(r) for r in rows]
+
+# ============================================
+# MESSAGING HELPERS (TEACHER–STUDENT)
+# ============================================
+
+def send_message(sender_id: int, receiver_id: int,
+                 subject: str | None, content: str) -> None:
+    """
+    Insert a new message.
+    """
+    eng = get_engine()
+    with eng.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO messages (sender_id, receiver_id, subject, content)
+                VALUES (:sid, :rid, :subj, :body)
+            """),
+            {"sid": sender_id, "rid": receiver_id,
+             "subj": subject or "", "body": content},
+        )
+
+
+def get_inbox(user_id: int) -> list[dict]:
+    """
+    All messages received by this user.
+    """
+    eng = get_engine()
+    with eng.begin() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT
+                  m.message_id,
+                  m.subject,
+                  m.content,
+                  m.readStatus,
+                  m.created_at,
+                  u.name  AS sender_name,
+                  u.email AS sender_email
+                FROM messages m
+                JOIN users u ON u.user_id = m.sender_id
+                WHERE m.receiver_id = :uid
+                ORDER BY m.created_at DESC
+            """),
+            {"uid": user_id},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def get_sent_messages(user_id: int) -> list[dict]:
+    """
+    All messages sent by this user.
+    """
+    eng = get_engine()
+    with eng.begin() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT
+                  m.message_id,
+                  m.subject,
+                  m.content,
+                  m.readStatus,
+                  m.created_at,
+                  u.name  AS receiver_name,
+                  u.email AS receiver_email
+                FROM messages m
+                JOIN users u ON u.user_id = m.receiver_id
+                WHERE m.sender_id = :uid
+                ORDER BY m.created_at DESC
+            """),
+            {"uid": user_id},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def mark_message_read(message_id: int, user_id: int) -> None:
+    """
+    Mark a message as READ (only by the receiver).
+    """
+    eng = get_engine()
+    with eng.begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE messages
+                   SET readStatus = 'READ'
+                 WHERE message_id = :mid
+                   AND receiver_id = :uid
+            """),
+            {"mid": message_id, "uid": user_id},
+        )
+
+
+def get_teacher_students(teacher_user_id: int) -> list[dict]:
+    """
+    Students assigned to a given teacher (identified by the teacher's user_id).
+    Returns: student_user_id, student_name, department.
+    """
+    eng = get_engine()
+    with eng.begin() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT
+                  s.student_id,
+                  u.user_id AS student_user_id,
+                  u.name    AS student_name,
+                  COALESCE(d.name, '') AS department
+                FROM teachers t
+                JOIN students s ON s.assigned_teacher_id = t.teacher_id
+                JOIN users u    ON u.user_id = s.user_id
+                LEFT JOIN departments d ON d.department_id = s.department_id
+                WHERE t.user_id = :uid
+                ORDER BY u.name
+            """),
+            {"uid": teacher_user_id},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def get_student_advisor(student_user_id: int) -> dict | None:
+    """
+    Advisor (teacher) for a given student (by student's user_id).
+    Returns: {teacher_user_id, teacher_name, teacher_email} or None.
+    """
+    eng = get_engine()
+    with eng.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT
+                  t.teacher_id,
+                  u.user_id AS teacher_user_id,
+                  u.name    AS teacher_name,
+                  u.email   AS teacher_email
+                FROM students s
+                JOIN teachers t ON t.teacher_id = s.assigned_teacher_id
+                JOIN users u    ON u.user_id = t.user_id
+                WHERE s.user_id = :uid
+            """),
+            {"uid": student_user_id},
+        ).mappings().first()
+    return dict(row) if row else None

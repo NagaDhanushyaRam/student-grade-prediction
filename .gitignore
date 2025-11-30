@@ -17,7 +17,7 @@ dist/
 # ======================
 .venv/
 venv/
-.env
+src/*.env
 .env.*
 .conda/
 requirements.txt~

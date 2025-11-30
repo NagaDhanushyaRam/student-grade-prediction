@@ -1,24 +1,24 @@
-# app.py
 import os
 import json
 import re
+from datetime import datetime
 from typing import Dict, Optional, List, Tuple
 
 import streamlit as st
 import numpy as np
 import pandas as pd
 from joblib import load
-from sqlalchemy import text
 
-from app_db import (
-    ensure_schema, get_engine,
+from mongo_client import get_db
+from app_db_mongo import (
     hash_pw, verify_pw,
     any_admin_exists, get_user_by_email, create_user,
     create_teacher_full, create_student_full,
     upsert_academic_record, get_latest_record,
     latest_model, can_run_prediction, teacher_choices,
-    # expose DB path so we can show it in UI
-    DB_FILE, DB_URL
+    send_message, get_inbox, get_sent_messages, mark_message_read,
+    get_teacher_students, get_student_advisor,
+    get_site_performance_summary, get_department_performance,
 )
 
 # =====================
@@ -39,11 +39,23 @@ def to_int(x):
 def _norm(s: str) -> str:
     return (s or "").strip().lower()
 
+def _mongo_next_id(coll_name: str, id_field: str) -> int:
+    db = get_db()
+    last = db[coll_name].find_one(sort=[(id_field, -1)])
+    return int(last[id_field]) + 1 if last and id_field in last else 1
+
 # PII that must never appear as dropdowns
 PII_FIELDS = {"student_id", "first_name", "last_name", "email", "name"}
 
 # Canonical core fields already collected in the top section
-CORE_FIELDS = {"attendance", "study_hours", "examscores", "stress_level", "sleep_hours", "participation"}
+CORE_FIELDS = {
+    "attendance",
+    "study_hours",
+    "examscores",
+    "stress_level",
+    "sleep_hours",
+    "participation",
+}
 
 # Treat anything containing these tokens as core and SKIP it from "Additional features"
 CORE_LIKE_TOKENS = [
@@ -73,16 +85,18 @@ def render_recommendations_bullets(student_id: int, prediction_id: Optional[int]
     """
     Show recommendations for a student as bullet points.
     If prediction_id is given, filter to that prediction; otherwise show latest/all.
+    MongoDB version.
     """
-    q = """
-        SELECT recommendationType, message
-          FROM recommendations
-         WHERE student_id = :sid
-           AND (:pid IS NULL OR prediction_id = :pid)
-      ORDER BY recommendation_id DESC
-    """
-    with get_engine().begin() as c2:
-        recs = c2.execute(text(q), {"sid": student_id, "pid": prediction_id}).mappings().all()
+    db = get_db()
+    query = {"student_id": int(student_id)}
+    if prediction_id is not None:
+        query["prediction_id"] = int(prediction_id)
+
+    recs = list(
+        db["recommendations"]
+        .find(query, {"_id": 0})
+        .sort("recommendation_id", -1)
+    )
 
     if not recs:
         st.caption("No recommendations for these inputs.")
@@ -90,10 +104,8 @@ def render_recommendations_bullets(student_id: int, prediction_id: Optional[int]
 
     st.markdown("**Recommendations**")
     for r in recs:
-        typ = (r["recommendationType"] or "").replace("_", " ").title()
-        st.markdown(f"- **{typ}** — {r['message']}")
-
-from typing import List, Tuple
+        typ = (r.get("recommendationType") or "").replace("_", " ").title()
+        st.markdown(f"- **{typ}** — {r.get('message','')}")
 
 def build_recommendations(core: dict) -> List[Tuple[str, str]]:
     recs: List[Tuple[str, str]] = []
@@ -114,12 +126,15 @@ def build_recommendations(core: dict) -> List[Tuple[str, str]]:
     att = core.get("attendance")
     if att is not None and att < TARGETS["attendance"]:
         recs.append(("ATTENDANCE", f"Raise attendance to at least {TARGETS['attendance']}%."))
+
     part = core.get("participation")
     if part is not None and part < TARGETS["participation"]:
         recs.append(("PARTICIPATION", f"Ask one question per class to lift participation above {TARGETS['participation']}%."))
+
     sh = core.get("study_hours")
     if sh is not None and sh < TARGETS["study_hours"]:
         recs.append(("STUDY", "Increase study time by 2–4 hours/week and split it across 3–4 sessions."))
+
     ex = core.get("examScores")
     if ex is not None and ex < TARGETS["examScores"]:
         recs.append(("EXAMS", "Do 2 extra practice sets this week and review misses with a TA or peer."))
@@ -141,172 +156,255 @@ def build_recommendations(core: dict) -> List[Tuple[str, str]]:
 def save_prediction(student_id, model_id, term, label, pass_p, fail_p, conn=None) -> int:
     """
     Upsert a prediction for (student_id, model_id, term) and return prediction_id.
-    Pass an open `conn` when you want atomic writes together with recommendations.
+    MongoDB version (conn is ignored, kept only for API compatibility).
     """
-    params = {
-        "sid": int(student_id),
-        "mid": int(model_id),
-        "term": term,
-        "status": label,
-        "pp": float(pass_p),
-        "fp": float(fail_p),
-    }
+    db = get_db()
+    coll = db["prediction_results"]
 
-    if conn is None:
-        with get_engine().begin() as c:
-            return _save_prediction_upsert(c, params)
+    sid = int(student_id)
+    mid = int(model_id)
+    term = term
+
+    existing = coll.find_one({"student_id": sid, "model_id": mid, "term": term})
+    if existing:
+        prediction_id = int(existing["prediction_id"])
     else:
-        return _save_prediction_upsert(conn, params)
+        prediction_id = _mongo_next_id("prediction_results", "prediction_id")
 
-def _save_prediction_upsert(conn, params) -> int:
-    # Insert-or-update (SQLite ON CONFLICT) using the unique index on (student_id, model_id, term)
-    conn.execute(text("""
-        INSERT INTO prediction_results (student_id, model_id, term, predictedStatus, passPercentage, failPercentage)
-        VALUES (:sid, :mid, :term, :status, :pp, :fp)
-        ON CONFLICT(student_id, model_id, term)
-        DO UPDATE SET
-          predictedStatus = excluded.predictedStatus,
-          passPercentage  = excluded.passPercentage,
-          failPercentage  = excluded.failPercentage
-    """), params)
+    coll.update_one(
+        {"student_id": sid, "model_id": mid, "term": term},
+        {
+            "$set": {
+                "prediction_id": prediction_id,
+                "predictedStatus": label,
+                "passPercentage": float(pass_p),
+                "failPercentage": float(fail_p),
+            },
+            "$setOnInsert": {
+                "created_at": datetime.utcnow().isoformat(),
+            },
+        },
+        upsert=True,
+    )
 
-    pid = conn.execute(text("""
-        SELECT prediction_id
-          FROM prediction_results
-         WHERE student_id=:sid AND model_id=:mid AND term=:term
-    """), params).scalar()
-    return int(pid)
+    return int(prediction_id)
 
 # =========================================
-# Replace recs (single connection/transaction)
+# Replace recs (single logical operation)
 # =========================================
 def _replace_recommendations_with_conn(conn, student_id: int, prediction_id: int,
                                        recs: List[Tuple[str, str]]):
+    """
+    Mongo version; `conn` is ignored (kept for API compatibility).
+    """
+    db = get_db()
+    coll = db["recommendations"]
+
     # de-dupe
     seen = set()
     recs = [(t, m) for (t, m) in recs if (t, m) not in seen and not seen.add((t, m))]
 
-    conn.execute(text("""
-        DELETE FROM recommendations
-         WHERE student_id = :sid AND prediction_id = :pid
-    """), {"sid": int(student_id), "pid": int(prediction_id)})
+    coll.delete_many({"student_id": int(student_id), "prediction_id": int(prediction_id)})
 
     if recs:
-        conn.execute(text("""
-            INSERT INTO recommendations (student_id, prediction_id, recommendationType, message)
-            VALUES (:sid, :pid, :typ, :msg)
-        """), [{"sid": int(student_id), "pid": int(prediction_id), "typ": t, "msg": m} for (t, m) in recs])
+        base_id = _mongo_next_id("recommendations", "recommendation_id")
+        docs = []
+        for offset, (typ, msg) in enumerate(recs):
+            docs.append(
+                {
+                    "recommendation_id": base_id + offset,
+                    "student_id": int(student_id),
+                    "prediction_id": int(prediction_id),
+                    "recommendationType": typ,
+                    "message": msg,
+                    "created_at": datetime.utcnow().isoformat(),
+                }
+            )
+        coll.insert_many(docs)
 
-# =====================
-# App init
-# =====================
-st.set_page_config(page_title="EduTrack — Student Performance", layout="centered")
-st.title("EduTrack — Student Performance")
+# NEW: ADMIN PERFORMANCE REPORT PAGE
+# ============================================
+def admin_performance_report_page(auth: dict) -> None:
+    st.subheader("Performance Report")
 
-ensure_schema()
+    summary = get_site_performance_summary()
+    dept_rows = get_department_performance()
 
-# Make the active DB path obvious while debugging
-st.caption(f"Database file: `{DB_FILE}`")
+    if not summary or summary.get("total_students") is None:
+        st.info("No performance data available yet.")
+        return
 
-# =====================
-# Admin bootstrap (first run)
-# =====================
-if not any_admin_exists():
-    st.subheader("Initial Admin Setup")
-    with st.form("bootstrap_admin", clear_on_submit=True):
-        a_name  = st.text_input("Admin Name", placeholder="Admin")
-        a_email = st.text_input("Admin Email", placeholder="admin@university.edu")
-        a_pass  = st.text_input("Admin Password", type="password", placeholder="••••••••")
-        ok = st.form_submit_button("Create Admin")
-    if ok:
-        if not (a_name and a_email and a_pass):
-            st.error("All fields are required.")
-        else:
-            try:
-                create_user(a_name, a_email, a_pass, "ADMIN")
-                st.success(f"Admin created: {a_email}. Please sign in.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Failed to create admin: {e}")
-    st.stop()
+    # --- Top KPIs ---
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Students", int(summary.get("total_students") or 0))
+    with col2:
+        st.metric("Teachers", int(summary.get("total_teachers") or 0))
+    with col3:
+        st.metric("Avg GPA", round(summary.get("avg_gpa") or 0.0, 2))
+    with col4:
+        avg_att = summary.get("avg_attendance") or 0.0
+        st.metric("Avg Attendance", f"{round(avg_att, 1)}%")
 
-# =====================
-# Auth (very light)
-# =====================
-if "auth" not in st.session_state:
-    st.session_state["auth"] = None
+    col5, col6 = st.columns(2)
+    with col5:
+        st.metric("Predicted Pass", int(summary.get("pass_count") or 0))
+    with col6:
+        st.metric("Predicted Fail", int(summary.get("fail_count") or 0))
 
-def show_login():
-    with st.form("login", clear_on_submit=False):
-        st.subheader("Sign in")
-        login_email = st.text_input("Email", placeholder="you@university.edu")
-        login_role  = st.selectbox("Role", ["ADMIN", "TEACHER", "STUDENT"])
-        login_pw    = st.text_input("Password", type="password", placeholder="••••••••")
-        submit_login = st.form_submit_button("Sign in")
+    st.markdown("---")
+    st.subheader("Department-level Performance")
 
-    if not submit_login:
-        st.stop()
+    if not dept_rows:
+        st.info("No department data available.")
+        return
 
-    u = get_user_by_email(login_email)
-    if not u:
-        st.error("User not found.")
-        st.stop()
+    df_dept = pd.DataFrame(dept_rows)
+    st.dataframe(df_dept)
 
-    if not verify_pw(login_pw, u["password_hash"]):
-        st.error("Incorrect password.")
-        st.stop()
+    # Simple charts (if columns exist)
+    if {"department", "avg_gpa"}.issubset(df_dept.columns):
+        st.markdown("#### Average GPA by Department")
+        st.bar_chart(df_dept.set_index("department")["avg_gpa"])
 
-    if u.get("role") != login_role:
-        st.error("Role mismatch for this account.")
-        st.stop()
+    if {"department", "avg_attendance"}.issubset(df_dept.columns):
+        st.markdown("#### Average Attendance by Department")
+        st.bar_chart(df_dept.set_index("department")["avg_attendance"])
 
-    st.session_state["auth"] = {
-        "user_id": u["user_id"], "email": u["email"],
-        "role": u["role"], "name": u.get("name", "")
-    }
-    st.rerun()
+    # Export CSV
+    csv = df_dept.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download Department Performance (CSV)",
+        data=csv,
+        file_name="department_performance.csv",
+        mime="text/csv",
+    )
 
-if st.session_state["auth"] is None:
-    show_login()
+# ============================================
+# MESSAGING PAGES (TOP-LEVEL HELPERS)
+# ============================================
+def messaging_page_teacher(auth: dict) -> None:
+    st.subheader("Teacher–Student Messages")
 
-auth = st.session_state["auth"]
+    # --- Send message form ---
+    st.markdown("### Send a New Message")
+    students = get_teacher_students(auth["user_id"])
 
-with st.sidebar:
-    st.caption(f"Signed in as **{auth['email']}** ({auth['role']})")
-    role = auth["role"]
-    st.sidebar.title("EduTrack")
-    if role == "ADMIN":
-        choice = st.sidebar.radio("Admin", ["Create Accounts","Manage Accounts","Analytics"])
-    elif role == "TEACHER":
-        choice = st.sidebar.radio("Teacher", ["My Profile","My Students","Predict"])
-    elif role == "STUDENT":
-        choice = st.sidebar.radio("Student", ["My Profile","My Performance","Predict"])
+    if not students:
+        st.info("No students are currently assigned to you.")
     else:
-        st.stop()
-    if st.button("Log out"):
-        st.session_state["auth"] = None
-        st.rerun()
+        # Map label -> student_user_id
+        options = {
+            f"{s['student_name']} ({s['department']})": s["student_user_id"]
+            for s in students
+        }
+        selected_label = st.selectbox("Select student", list(options.keys()))
+        subject = st.text_input("Subject")
+        body = st.text_area("Message")
 
-# =====================
-# Model & feature schema
-# =====================
-mdl = latest_model("student_grade_predictor")
-if not mdl:
-    st.warning("No trained model found. Run: python -m src.train_model")
-    st.stop()
+        if st.button("Send Message"):
+            if body.strip():
+                recv_id = options[selected_label]
+                send_message(auth["user_id"], recv_id, subject, body)
+                st.success("Message sent.")
+            else:
+                st.warning("Message body cannot be empty.")
 
-try:
-    pipe = load(mdl["path"])
-except Exception as e:
-    st.error(f"Failed to load model: {e}")
-    st.stop()
+    st.markdown("---")
+    st.markdown("### Inbox")
+    inbox = get_inbox(auth["user_id"])
+    if not inbox:
+        st.info("No messages in your inbox.")
+    else:
+        for msg in inbox:
+            key_prefix = f"t_in_{msg['message_id']}"
+            with st.expander(
+                f"{msg['created_at']} – {msg['sender_name']} "
+                f"({msg['readStatus']}) – {msg['subject']}"
+            ):
+                st.write(f"**From:** {msg['sender_name']} <{msg['sender_email']}>")
+                st.write("---")
+                st.write(msg["content"])
+                if msg["readStatus"] == "UNREAD":
+                    if st.button("Mark as read", key=f"{key_prefix}_read"):
+                        mark_message_read(msg["message_id"], auth["user_id"])
+                        st.rerun()
 
-try:
-    with open(mdl["columns_path"], "r", encoding="utf-8") as f:
-        feature_schema = json.load(f)
-except Exception as e:
-    st.error(f"Failed to load feature schema: {e}")
-    st.stop()
+    st.markdown("### Sent")
+    sent = get_sent_messages(auth["user_id"])
+    if not sent:
+        st.info("No sent messages.")
+    else:
+        for msg in sent:
+            key_prefix = f"t_out_{msg['message_id']}"
+            with st.expander(
+                f"{msg['created_at']} – To {msg['receiver_name']} – {msg['subject']}"
+            ):
+                st.write(f"**To:** {msg['receiver_name']} <{msg['receiver_email']}>")
+                st.write("---")
+                st.write(msg["content"])
+
+
+def messaging_page_student(auth: dict) -> None:
+    st.subheader("Messages")
+
+    advisor = get_student_advisor(auth["user_id"])
+
+    # --- Send message to advisor (if one exists) ---
+    if advisor:
+        st.markdown("### Message Your Advisor")
+        st.write(
+            f"Advisor: **{advisor['teacher_name']}** "
+            f"(<{advisor['teacher_email']}>)"
+        )
+        subject = st.text_input("Subject", key="stu_msg_subject")
+        body = st.text_area("Message", key="stu_msg_body")
+        if st.button("Send to Advisor"):
+            if body.strip():
+                send_message(
+                    auth["user_id"],
+                    advisor["teacher_user_id"],
+                    subject,
+                    body,
+                )
+                st.success("Message sent to your advisor.")
+            else:
+                st.warning("Message body cannot be empty.")
+
+    st.markdown("---")
+    st.markdown("### Inbox")
+    inbox = get_inbox(auth["user_id"])
+    if not inbox:
+        st.info("No messages yet.")
+    else:
+        for msg in inbox:
+            key_prefix = f"s_in_{msg['message_id']}"
+            with st.expander(
+                f"{msg['created_at']} – {msg['sender_name']} "
+                f"({msg['readStatus']}) – {msg['subject']}"
+            ):
+                st.write(f"**From:** {msg['sender_name']} <{msg['sender_email']}>")
+                st.write("---")
+                st.write(msg["content"])
+                if msg["readStatus"] == "UNREAD":
+                    if st.button("Mark as read", key=f"{key_prefix}_read"):
+                        mark_message_read(msg["message_id"], auth["user_id"])
+                        st.rerun()
+
+    st.markdown("### Sent")
+    sent = get_sent_messages(auth["user_id"])
+    if not sent:
+        st.info("No sent messages.")
+    else:
+        for msg in sent:
+            key_prefix = f"s_out_{msg['message_id']}"
+            with st.expander(
+                f"{msg['created_at']} – To {msg['receiver_name']} – {msg['subject']}"
+            ):
+                st.write(f"**To:** {msg['receiver_name']} <{msg['receiver_email']}>")
+                st.write("---")
+                st.write(msg["content"])
+
 
 def render_extra_features(feature_schema):
     """
@@ -345,7 +443,13 @@ def render_extra_features(feature_schema):
         matched = False
         for pred, choices in CHOICE_MATCHERS:
             if pred(nf):
-                values[fname] = st.selectbox(label, options=[""] + choices, index=0, key=f"rf_extra_{fname}")
+                values[fname] = st.selectbox(
+                    label,
+                    options=choices,
+                    index=None,
+                    placeholder="Select…",
+                    key=f"rf_extra_{fname}",
+                )
                 matched = True
                 break
         if matched:
@@ -358,6 +462,136 @@ def render_extra_features(feature_schema):
 
     return values
 
+
+# =====================
+# App init
+# =====================
+st.set_page_config(page_title="EduTrack — Student Performance", layout="centered")
+st.title("EduTrack — Student Performance")
+
+st.caption("Database: MongoDB Atlas (hosted)")
+
+
+# =====================
+# Admin bootstrap (first run)
+# =====================
+if not any_admin_exists():
+    st.subheader("Initial Admin Setup")
+    with st.form("bootstrap_admin", clear_on_submit=True):
+        a_name  = st.text_input("Admin Name", placeholder="Admin")
+        a_email = st.text_input("Admin Email", placeholder="admin@university.edu")
+        a_pass  = st.text_input("Admin Password", type="password", placeholder="••••••••")
+        ok = st.form_submit_button("Create Admin")
+    if ok:
+        if not (a_name and a_email and a_pass):
+            st.error("All fields are required.")
+        else:
+            try:
+                create_user(a_name, a_email.strip().lower(), a_pass, "ADMIN")
+                st.success(f"Admin created: {a_email}. Please sign in.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to create admin: {e}")
+    st.stop()
+
+
+# =====================
+# Auth (very light)
+# =====================
+if "auth" not in st.session_state:
+    st.session_state["auth"] = None
+
+def show_login():
+    st.subheader("Sign in")
+
+    login_email = st.text_input("Email", placeholder="you@university.edu", key="login_email")
+    login_role  = st.selectbox("Role", ["ADMIN", "TEACHER", "STUDENT"], key="login_role")
+    login_pw    = st.text_input("Password", type="password", placeholder="••••••••", key="login_pw")
+
+    all_filled = bool(login_email.strip() and login_pw.strip())
+    clicked = st.button("Sign in", disabled=not all_filled)
+
+    if not clicked:
+        return  # just show the form
+
+    if not login_email.strip():
+        st.error("Email is required.")
+        return
+    if not login_pw.strip():
+        st.error("Password is required.")
+        return
+
+    login_email_norm = login_email.strip().lower()
+
+    u = get_user_by_email(login_email_norm)
+    if not u:
+        st.error("User not found.")
+        return
+
+    if not verify_pw(login_pw, u["password_hash"]):
+        st.error("Incorrect password.")
+        return
+
+    if u.get("role") != login_role:
+        st.error("Role mismatch for this account.")
+        return
+
+    st.session_state["auth"] = {
+        "user_id": u["user_id"],
+        "email":  u["email"],
+        "role":   u["role"],
+        "name":   u.get("name", "")
+    }
+    st.rerun()
+
+
+# ---- enforce login before showing rest of app ----
+if st.session_state["auth"] is None:
+    show_login()
+    st.stop()        # ⬅️ important: don’t run the rest of the app until logged in
+
+auth = st.session_state["auth"]
+
+
+with st.sidebar:
+    st.caption(f"Signed in as **{auth['email']}** ({auth['role']})")
+    role = auth["role"]
+    st.sidebar.title("EduTrack")
+    if role == "ADMIN":
+        choice = st.sidebar.radio("Admin", ["Create Accounts","Manage Accounts","Analytics","Performance Report"])
+    elif role == "TEACHER":
+        choice = st.sidebar.radio("Teacher", ["My Profile","My Students","Predict","Messages"])
+    elif role == "STUDENT":
+        choice = st.sidebar.radio("Student", ["My Profile","My Performance","Predict","Messages"])
+    else:
+        st.stop()
+    if st.button("Log out"):
+        st.session_state["auth"] = None
+        st.rerun()
+
+
+# =====================
+# Model & feature schema
+# =====================
+mdl = latest_model("student_grade_predictor")
+if not mdl:
+    st.warning("No trained model found. Run: python -m src.train_model")
+    st.stop()
+
+try:
+    pipe = load(mdl["path"])
+except Exception as e:
+    st.error(f"Failed to load model: {e}")
+    st.stop()
+
+try:
+    with open(mdl["columns_path"], "r", encoding="utf-8") as f:
+        feature_schema = json.load(f)
+except Exception as e:
+    st.error(f"Failed to load feature schema: {e}")
+    st.stop()
+
+
 # ==============================================================
 # ADMIN DASHBOARD
 # ==============================================================
@@ -367,9 +601,7 @@ if role == "ADMIN":
 
         # --- Create Student
         with tab1:
-            eng = get_engine()
-            with eng.begin() as conn:
-                tmap = teacher_choices(conn)
+            tmap = teacher_choices()
 
             with st.form("create_student", clear_on_submit=True):
                 name = st.text_input("Name")
@@ -381,21 +613,30 @@ if role == "ADMIN":
                 ext_id = st.text_input("External Student ID")
                 dept = st.text_input("Department Name (normalized)")
                 gpa = st.number_input("GPA (optional)", min_value=0.0, max_value=4.0, step=0.01, format="%.2f")
-                assigned_label = st.selectbox("Assigned Teacher", [""] + list(tmap.keys()))
+                teacher_labels = list(tmap.keys())
+                assigned_label = st.selectbox(
+                    "Assigned Teacher",
+                    teacher_labels,
+                    index=None,
+                    placeholder="Select a teacher (optional)",
+                )
                 submitted = st.form_submit_button("Create Student")
 
-            if submitted:
-                try:
-                    tid = tmap.get(assigned_label) if assigned_label else None
-                    create_student_full(
-                        name, email, pwd,
-                        academic_year, int(age), gender,
-                        ext_id, dept, (float(gpa) if gpa else None),
-                        tid
-                    )
-                    st.success("Student created ✅")
-                except Exception as e:
-                    st.error(str(e))
+                if submitted:
+                    try:
+                        # assigned_label will be None if nothing is chosen
+                        tid = tmap.get(assigned_label) if assigned_label else None
+                        create_student_full(
+                            name,
+                            email.strip().lower(),
+                            pwd,
+                            academic_year, int(age), gender,
+                            ext_id, dept, (float(gpa) if gpa else None),
+                            tid
+                        )
+                        st.success("Student created ✅")
+                    except Exception as e:
+                        st.error(str(e))
 
         # --- Create Teacher
         with tab2:
@@ -407,7 +648,7 @@ if role == "ADMIN":
                 submitted = st.form_submit_button("Create Teacher")
             if submitted:
                 try:
-                    create_teacher_full(t_name, t_email, t_pwd, t_dept)
+                    create_teacher_full(t_name, t_email.strip().lower(), t_pwd, t_dept)
                     st.success("Teacher created ✅")
                 except Exception as e:
                     st.error(str(e))
@@ -415,36 +656,49 @@ if role == "ADMIN":
     elif choice == "Manage Accounts":
         st.subheader("Users")
         try:
-            eng = get_engine()
-            with eng.begin() as conn:
-                rows = conn.execute(
-                    text("SELECT user_id, name, email, role, is_active, created_at FROM users ORDER BY user_id DESC LIMIT 100")
-                ).mappings().all()
+            db = get_db()
+            rows = list(
+                db["users"]
+                .find({}, {"_id": 0, "password_hash": 0})
+                .sort("user_id", -1)
+                .limit(100)
+            )
             st.dataframe(pd.DataFrame(rows), use_container_width=True)
-            st.caption("Tip: use SQL console for bulk edits; keep performance edits out of Admin.")
+            st.caption("Tip: for bulk edits use a separate admin script; keep Streamlit UI simple.")
         except Exception as e:
             st.error(f"List error: {e}")
 
     elif choice == "Analytics":
         st.subheader("Site Analytics")
         try:
-            eng = get_engine()
-            with eng.begin() as conn:
-                total_students = conn.execute(text("SELECT COUNT(*) FROM students")).scalar()
-                total_teachers = conn.execute(text("SELECT COUNT(*) FROM teachers")).scalar()
-                by_dept = conn.execute(text("""
-                    SELECT COALESCE(d.name,'(None)') AS dept, COUNT(*)
-                      FROM students s
-                      LEFT JOIN departments d ON d.department_id = s.department_id
-                     GROUP BY 1
-                     ORDER BY 2 DESC
-                """)).fetchall()
+            summary = get_site_performance_summary()
+            db = get_db()
+
+            total_students = summary.get("total_students") or 0
+            total_teachers = summary.get("total_teachers") or 0
+
+            # build dept counts for bar chart
+            students = list(db["students"].find({}))
+            departments = {d["department_id"]: d["name"] for d in db["departments"].find({})}
+            counts = {}
+            for s in students:
+                dep_id = s.get("department_id")
+                dep_name = departments.get(dep_id, "(None)")
+                counts[dep_name] = counts.get(dep_name, 0) + 1
+
             c1, c2 = st.columns(2)
-            c1.metric("Students", total_students or 0)
-            c2.metric("Teachers", total_teachers or 0)
-            st.bar_chart({d: c for d, c in by_dept})
+            c1.metric("Students", total_students)
+            c2.metric("Teachers", total_teachers)
+            if counts:
+                st.bar_chart(counts)
+            else:
+                st.caption("No students yet.")
         except Exception as e:
             st.error(f"Analytics error: {e}")
+            
+    elif choice == "Performance Report":  # NEW
+        admin_performance_report_page(auth)
+
 
 # ==============================================================
 # TEACHER DASHBOARD
@@ -458,27 +712,37 @@ if role == "TEACHER":
 
     # ---- helper to load students assigned to this teacher
     def _assigned_students_for_teacher(user_id: int):
-        with get_engine().begin() as conn:
-            rows = conn.execute(text("""
-                SELECT s.student_id,
-                       u.name AS student_name,
-                       s.external_student_id,
-                       COALESCE(d.name,'') AS department,
-                       s.academic_year,
-                       s.gpa
-                  FROM students s
-                  JOIN teachers t  ON t.teacher_id = s.assigned_teacher_id
-                  JOIN users tu     ON tu.user_id   = t.user_id
-                  JOIN users u      ON u.user_id    = s.user_id
-             LEFT JOIN departments d ON d.department_id = s.department_id
-                 WHERE tu.user_id = :uid
-              ORDER BY u.name
-            """), {"uid": auth["user_id"]}).mappings().all()
-        opts = {
-            f"{r['student_name']}  (#{r['external_student_id'] or r['student_id']} — {r['department']})": int(r['student_id'])
-            for r in rows
-        }
-        return rows, opts
+        db = get_db()
+        teacher = db["teachers"].find_one({"user_id": int(user_id)})
+        if not teacher:
+            return [], {}
+
+        tid = int(teacher["teacher_id"])
+        students = list(db["students"].find({"assigned_teacher_id": tid}))
+        rows = []
+        options = {}
+
+        departments = {d["department_id"]: d["name"] for d in db["departments"].find({})}
+
+        for s in students:
+            stu_user = db["users"].find_one({"user_id": int(s["user_id"])})
+            if not stu_user:
+                continue
+            dept_name = departments.get(s.get("department_id"), "")
+            row = {
+                "student_id": int(s["student_id"]),
+                "student_name": stu_user["name"],
+                "external_student_id": s.get("external_student_id"),
+                "department": dept_name,
+                "academic_year": s.get("academic_year"),
+                "gpa": s.get("gpa"),
+            }
+            rows.append(row)
+            label = f"{row['student_name']}  (#{row['external_student_id'] or row['student_id']} — {row['department']})"
+            options[label] = row["student_id"]
+
+        rows.sort(key=lambda r: r["student_name"])
+        return rows, options
 
     # ---------------------------
     # Shared: selector on both tabs
@@ -538,13 +802,13 @@ if role == "TEACHER":
                 with st.expander("Additional saved features"):
                     st.json(rec.get("extra") or {})
 
-                with get_engine().begin() as conn:
-                    preds = conn.execute(text("""
-                        SELECT prediction_id, model_id, term, predictedStatus, passPercentage, failPercentage, created_at
-                          FROM prediction_results
-                         WHERE student_id = :sid
-                      ORDER BY prediction_id DESC LIMIT 5
-                    """), {"sid": sid}).mappings().all()
+                db = get_db()
+                preds = list(
+                    db["prediction_results"]
+                    .find({"student_id": int(sid)}, {"_id": 0})
+                    .sort("prediction_id", -1)
+                    .limit(5)
+                )
                 if preds:
                     st.markdown("**Recent Predictions**")
                     st.dataframe(pd.DataFrame(preds), use_container_width=True)
@@ -596,157 +860,22 @@ if role == "TEACHER":
 
             if st.button("Predict"):
                 try:
-                    with get_engine().begin() as conn:
-                        if not can_run_prediction("TEACHER", auth["user_id"], sid, conn):
-                            st.error("Not permitted.")
-                        else:
-                            rec = get_latest_record(sid)
-                            if not rec:
-                                st.error("No academic record for this student.")
-                            else:
-                                core = {
-                                    "attendance": rec.get("attendance"),
-                                    "study_hours": rec.get("study_hours"),
-                                    "examScores": rec.get("examScores"),
-                                    "stress_level": rec.get("stress_level"),
-                                    "sleep_hours": rec.get("sleep_hours"),
-                                    "participation": rec.get("participation"),
-                                }
-                                extra = rec.get("extra") or {}
-                                row_dict = {}
-                                for feat in feature_schema:
-                                    name = feat["name"]
-                                    if _norm(name) in {_norm(k) for k in core.keys()} and core.get(name) is not None:
-                                        row_dict[name] = core[name]
-                                    elif name in core and core[name] is not None:
-                                        row_dict[name] = core[name]
-                                    elif name in extra and extra[name] not in (None, ""):
-                                        row_dict[name] = extra[name]
-                                    else:
-                                        row_dict[name] = 0.0 if feat.get("type") == "number" else (feat.get("choices") or [""])[0]
-
-                                X = pd.DataFrame([row_dict], columns=[f["name"] for f in feature_schema])
-                                prob_pass = float(pipe.predict_proba(X)[0, 1])
-                                label = "PASS" if prob_pass >= 0.5 else "FAIL"
-
-                                # ONE TRANSACTION: upsert prediction + always-on recs
-                                pred_id = save_prediction(
-                                    sid, mdl["model_id"], rec.get("term","N/A"),
-                                    label, prob_pass, 1.0 - prob_pass,
-                                    conn=conn
-                                )
-                                recs_to_set = build_recommendations(core)
-                                _replace_recommendations_with_conn(conn, sid, pred_id, recs_to_set)
-
-                    st.info(f"Prediction: **{label}**  (Pass prob: {prob_pass:.2f})")
-                    render_recommendations_bullets(sid, pred_id)
-
-                except Exception as e:
-                    st.error(f"Prediction error: {e}")
-
-# ==============================================================
-# STUDENT DASHBOARD
-# ==============================================================
-if role == "STUDENT":
-    if choice == "My Profile":
-        st.subheader("My Profile")
-        try:
-            eng = get_engine()
-            with eng.begin() as conn:
-                row = conn.execute(text("""
-                    SELECT u.name, u.email,
-                           s.external_student_id, s.academic_year, s.age, s.gender,
-                           COALESCE(d.name,'') AS department,
-                           s.gpa,
-                           (SELECT u2.name
-                              FROM teachers t2
-                              JOIN users u2 ON u2.user_id = t2.user_id
-                             WHERE t2.teacher_id = s.assigned_teacher_id) AS assigned_teacher
-                      FROM users u
-                INNER JOIN students s ON s.user_id = u.user_id
-                 LEFT JOIN departments d ON d.department_id = s.department_id
-                     WHERE u.user_id = :uid
-                """), {"uid": auth["user_id"]}).mappings().first()
-            if row:
-                st.json(dict(row))
-            else:
-                st.info("No student profile found.")
-        except Exception as e:
-            st.error(f"Profile load error: {e}")
-
-    elif choice == "My Performance":
-        st.subheader("Performance (read-only)")
-        try:
-            eng = get_engine()
-            with eng.begin() as conn:
-                rows = conn.execute(text("""
-                    SELECT term, attendance, study_hours, examScores, stress_level,
-                           sleep_hours, participation, extra_json, created_at
-                      FROM student_academic_data sad
-                      JOIN students s ON s.student_id = sad.student_id
-                     WHERE s.user_id = :uid
-                  ORDER BY data_id DESC
-                """), {"uid": auth["user_id"]}).mappings().all()
-
-                if rows:
-                    df = pd.DataFrame([{
-                        "term": r["term"],
-                        "attendance": r["attendance"],
-                        "study_hours": r["study_hours"],
-                        "examScores": r["examScores"],
-                        "stress_level": r["stress_level"],
-                        "sleep_hours": r["sleep_hours"],
-                        "participation": r["participation"],
-                        "created_at": r["created_at"],
-                    } for r in rows])
-                    st.dataframe(df, use_container_width=True)
-
-                    with st.expander("See additional saved features"):
-                        for r in rows:
-                            try:
-                                extra = json.loads(r.get("extra_json") or "{}")
-                            except Exception:
-                                extra = {}
-                            st.markdown(f"**{r['term']}**")
-                            st.json(extra)
-                else:
-                    st.info("No records yet.")
-        except Exception as e:
-            st.error(f"Load error: {e}")
-
-    elif choice == "Predict":
-        st.subheader("Predict My Result")
-        try:
-            # Get my student_id
-            with get_engine().begin() as conn:
-                sid = conn.execute(
-                    text("SELECT student_id FROM students WHERE user_id=:u"),
-                    {"u": auth["user_id"]}
-                ).scalar()
-
-            if not sid:
-                st.error("Student profile not found.")
-            elif st.button("Predict My Result"):
-                # Re-check permission and run prediction
-                with get_engine().begin() as conn:
-                    if not can_run_prediction("STUDENT", auth["user_id"], int(sid), conn):
-                        st.error("You can only run predictions for your own record.")
+                    if not can_run_prediction("TEACHER", auth["user_id"], sid):
+                        st.error("Not permitted.")
                     else:
-                        rec = get_latest_record(int(sid))
+                        rec = get_latest_record(sid)
                         if not rec:
-                            st.error("No academic record found.")
+                            st.error("No academic record for this student.")
                         else:
                             core = {
-                                "attendance":    rec.get("attendance"),
-                                "study_hours":   rec.get("study_hours"),
-                                "examScores":    rec.get("examScores"),
-                                "stress_level":  rec.get("stress_level"),
-                                "sleep_hours":   rec.get("sleep_hours"),
+                                "attendance": rec.get("attendance"),
+                                "study_hours": rec.get("study_hours"),
+                                "examScores": rec.get("examScores"),
+                                "stress_level": rec.get("stress_level"),
+                                "sleep_hours": rec.get("sleep_hours"),
                                 "participation": rec.get("participation"),
                             }
                             extra = rec.get("extra") or {}
-
-                            # Build model row with exact training columns
                             row_dict = {}
                             for feat in feature_schema:
                                 name = feat["name"]
@@ -763,19 +892,167 @@ if role == "STUDENT":
                             prob_pass = float(pipe.predict_proba(X)[0, 1])
                             label = "PASS" if prob_pass >= 0.5 else "FAIL"
 
-                            # ONE TRANSACTION: save prediction + replace recommendations
                             pred_id = save_prediction(
-                                int(sid), mdl["model_id"], rec.get("term", "N/A"),
+                                sid, mdl["model_id"], rec.get("term","N/A"),
                                 label, prob_pass, 1.0 - prob_pass,
-                                conn=conn
+                                conn=None
                             )
-                            # Always-on recs (same helper as Teacher)
                             recs_to_set = build_recommendations(core)
-                            _replace_recommendations_with_conn(conn, int(sid), pred_id, recs_to_set)
+                            _replace_recommendations_with_conn(None, sid, pred_id, recs_to_set)
 
-                st.success(f"{label} ({prob_pass:.1%})")
-                render_recommendations_bullets(int(sid), pred_id)
+                    st.info(f"Prediction: **{label}**  (Pass prob: {prob_pass:.2f})")
+                    render_recommendations_bullets(sid, pred_id)
+
+                except Exception as e:
+                    st.error(f"Prediction error: {e}")
+
+    if choice == "Messages":
+        messaging_page_teacher(auth)
+
+
+# ==============================================================
+# STUDENT DASHBOARD
+# ==============================================================
+if role == "STUDENT":
+    if choice == "My Profile":
+        st.subheader("My Profile")
+        try:
+            db = get_db()
+            user = db["users"].find_one({"user_id": int(auth["user_id"])})
+            student = db["students"].find_one({"user_id": int(auth["user_id"])})
+            dept = None
+            if student and student.get("department_id") is not None:
+                dept = db["departments"].find_one(
+                    {"department_id": int(student["department_id"])}
+                )
+            assigned_name = None
+            if student and student.get("assigned_teacher_id"):
+                t = db["teachers"].find_one(
+                    {"teacher_id": int(student["assigned_teacher_id"])}
+                )
+                if t:
+                    tu = db["users"].find_one({"user_id": int(t["user_id"])})
+                    if tu:
+                        assigned_name = tu.get("name")
+
+            if user and student:
+                row = {
+                    "name": user.get("name"),
+                    "email": user.get("email"),
+                    "external_student_id": student.get("external_student_id"),
+                    "academic_year": student.get("academic_year"),
+                    "age": student.get("age"),
+                    "gender": student.get("gender"),
+                    "department": dept.get("name") if dept else "",
+                    "gpa": student.get("gpa"),
+                    "assigned_teacher": assigned_name,
+                }
+                st.json(row)
+            else:
+                st.info("No student profile found.")
+        except Exception as e:
+            st.error(f"Profile load error: {e}")
+
+    elif choice == "My Performance":
+        st.subheader("Performance (read-only)")
+        try:
+            db = get_db()
+            student = db["students"].find_one({"user_id": int(auth["user_id"])})
+            if not student:
+                st.info("No student record found.")
+            else:
+                sid = int(student["student_id"])
+                rows = list(
+                    db["student_academic_data"]
+                    .find({"student_id": sid})
+                    .sort("data_id", -1)
+                )
+
+                if rows:
+                    df = pd.DataFrame([{
+                        "term": r.get("term"),
+                        "attendance": r.get("attendance"),
+                        "study_hours": r.get("study_hours"),
+                        "examScores": r.get("examScores"),
+                        "stress_level": r.get("stress_level"),
+                        "sleep_hours": r.get("sleep_hours"),
+                        "participation": r.get("participation"),
+                        "created_at": r.get("created_at"),
+                    } for r in rows])
+                    st.dataframe(df, use_container_width=True)
+
+                    with st.expander("See additional saved features"):
+                        for r in rows:
+                            try:
+                                extra = json.loads(r.get("extra_json") or "{}")
+                            except Exception:
+                                extra = {}
+                            st.markdown(f"**{r.get('term')}**")
+                            st.json(extra)
+                else:
+                    st.info("No records yet.")
+        except Exception as e:
+            st.error(f"Load error: {e}")
+
+    elif choice == "Predict":
+        st.subheader("Predict My Result")
+        try:
+            db = get_db()
+            stu_doc = db["students"].find_one({"user_id": int(auth["user_id"])})
+            sid = int(stu_doc["student_id"]) if stu_doc else None
+
+            if not sid:
+                st.error("Student profile not found.")
+            elif st.button("Predict My Result"):
+                if not can_run_prediction("STUDENT", auth["user_id"], int(sid)):
+                    st.error("You can only run predictions for your own record.")
+                else:
+                    rec = get_latest_record(int(sid))
+                    if not rec:
+                        st.error("No academic record found.")
+                    else:
+                        core = {
+                            "attendance":    rec.get("attendance"),
+                            "study_hours":   rec.get("study_hours"),
+                            "examScores":    rec.get("examScores"),
+                            "stress_level":  rec.get("stress_level"),
+                            "sleep_hours":   rec.get("sleep_hours"),
+                            "participation": rec.get("participation"),
+                        }
+                        extra = rec.get("extra") or {}
+
+                        # Build model row with exact training columns
+                        row_dict = {}
+                        for feat in feature_schema:
+                            name = feat["name"]
+                            if _norm(name) in {_norm(k) for k in core.keys()} and core.get(name) is not None:
+                                row_dict[name] = core[name]
+                            elif name in core and core[name] is not None:
+                                row_dict[name] = core[name]
+                            elif name in extra and extra[name] not in (None, ""):
+                                row_dict[name] = extra[name]
+                            else:
+                                row_dict[name] = 0.0 if feat.get("type") == "number" else (feat.get("choices") or [""])[0]
+
+                        X = pd.DataFrame([row_dict], columns=[f["name"] for f in feature_schema])
+                        prob_pass = float(pipe.predict_proba(X)[0, 1])
+                        label = "PASS" if prob_pass >= 0.5 else "FAIL"
+
+                        pred_id = save_prediction(
+                            int(sid), mdl["model_id"], rec.get("term", "N/A"),
+                            label, prob_pass, 1.0 - prob_pass,
+                            conn=None
+                        )
+                        # Always-on recs (same helper as Teacher)
+                        recs_to_set = build_recommendations(core)
+                        _replace_recommendations_with_conn(None, int(sid), pred_id, recs_to_set)
+
+                if sid:
+                    st.success(f"{label} ({prob_pass:.1%})")
+                    render_recommendations_bullets(int(sid), pred_id)
 
         except Exception as e:
             st.error(f"Prediction error: {e}")
-
+    
+    if choice == "Messages":
+        messaging_page_student(auth)
