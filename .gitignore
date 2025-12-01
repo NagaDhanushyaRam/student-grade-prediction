@@ -1,8 +1,80 @@
-streamlit
-numpy
-pandas
-scikit-learn
-joblib
-python-dotenv
-pymongo
-certifi
+# ======================
+# Python / Build Artifacts
+# ======================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+.build/
+dist/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# ======================
+# Environments / Tools
+# ======================
+.venv/
+venv/
+.env
+.env
+.env.*
+.conda/
+requirements.txt~
+environment.yml~
+
+# ======================
+# IDE / OS
+# ======================
+.vscode/*
+!.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# ======================
+# Streamlit
+# ======================
+.streamlit/secrets.toml
+.streamlit/cache/
+.streamlit/uploaded_files/
+
+# ======================
+# SQLite / Local DBs
+# (keep schema.sql tracked, ignore actual runtime data)
+# ======================
+*.db
+*.db-wal
+*.db-shm
+*.session.sql
+db/*.db
+db/*.sqlite
+edutrack.db
+
+# ======================
+# Models
+# Keep feature_schema.json but ignore binary models
+# ======================
+models/*.pkl
+models/*.joblib
+
+# ======================
+# Data files (large artifacts)
+# Keep a small sample CSV in repo if needed; ignore bulk data
+# ======================
+data/*.csv
+data/*.xlsx
+data/*.parquet
+data/*.feather
+data/*.zip
+data/*.7z
+data/*.tar
+data/*.gz
+
+# ======================
+# Logs / Cache
+# ======================
+*.log
+logs/
+.cache/
