@@ -154,6 +154,7 @@ The system supports Admins, Teachers, and Students, providing prediction-driven 
     └─ README.md
 
 ⚙️ Installation & Setup
+
     1️⃣ Clone the Repository
         git clone https://github.com/your-username/student-grade-prediction.git
         cd student-grade-prediction
@@ -260,3 +261,4 @@ The system supports Admins, Teachers, and Students, providing prediction-driven 
 
     EduTrack Development Team
     Towson University — COSC 612 / AIT 624
+
