@@ -1,0 +1,13 @@
+Login Details Edutrack:
+
+ADMIN - admin@university.edu ; ADMIN
+TEACHER - alicep@university.edu ; ALICEP123
+STUDENT - johna@university.edu ; JOHNA123
+TEACHER - bobm@university.edu ; BOBM123
+STUDENT - micha@university.edu ; MICHA123
+TEACHER - marye@university.edu ; MARYE123
+STUDENT - malcolmg@university.edu ; MALCOLMG123
+TEACHER - alexm@university.edu ; ALEXM123
+STUDENT - merig@university.edu ; MERIG123
+STUDENT - hriros@university.edu ; HRIROS123
+TEACHER - johnt@university.edu ; JOHNT123
