@@ -1,9 +1,9 @@
-# src/mongo_client.py
 import os
 from functools import lru_cache
 
 from dotenv import load_dotenv
 from pymongo import MongoClient
+import certifi  # <-- new
 
 load_dotenv()
 
@@ -15,5 +15,10 @@ if not MONGODB_URI:
 
 @lru_cache(maxsize=1)
 def get_db():
-    client = MongoClient(MONGODB_URI)
+    # Use certifi’s CA bundle so TLS trust is clean on Windows
+    client = MongoClient(
+        MONGODB_URI,
+        tlsCAFile=certifi.where(),           # <– important
+        serverSelectionTimeoutMS=30000,      # 30s (same as default, explicit)
+    )
     return client[MONGODB_DBNAME]
