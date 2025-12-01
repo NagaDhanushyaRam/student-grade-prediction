@@ -160,12 +160,10 @@ The system supports Admins, Teachers, and Students, providing prediction-driven 
         cd student-grade-prediction
 
     2️⃣ Create and Activate Environment
-        Option A — Conda (recommended)
-            conda env create -f environment.yml
-            conda activate gradepred
-
-        Option B — pip
-            pip install -r requirements.txt
+    
+        conda create -n gradepred python=3.10 -y
+        conda activate gradepred
+        pip install -r requirements.txt
 
     3️⃣ Configure MongoDB
 
@@ -266,3 +264,4 @@ The system supports Admins, Teachers, and Students, providing prediction-driven 
       - Stephen Aboagye-Ntow
       - Ayandayo Adeleke
     Towson University — COSC 612
+
