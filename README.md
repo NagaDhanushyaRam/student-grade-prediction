@@ -178,6 +178,7 @@ The system supports Admins, Teachers, and Students, providing prediction-driven 
         MONGODB_DBNAME="edutrack"
 
         Make sure the MongoDB user has read/write permissions for the edutrack database, and your IP/network is allowed in Network Access.
+        Use the .env file in src directory for easy access. 
 
     4️⃣ Train the Model (First Time Only) ✅
 
@@ -264,5 +265,6 @@ The system supports Admins, Teachers, and Students, providing prediction-driven 
       - Stephen Aboagye-Ntow
       - Ayandayo Adeleke
     Towson University — COSC 612
+
 
 
