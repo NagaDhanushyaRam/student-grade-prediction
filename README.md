@@ -1,107 +1,262 @@
-**STUDENT GRADE PREDICTION SYSTEM**
+📘 EduTrack — Student Grade Prediction & Recommendation System
 
-This project implements a Student Grade Prediction System designed for academic performance tracking and personalized recommendations.It forms Sprint 3 – Task 5 (Implementation) of the Software Engineering course project.
+EduTrack is a full-stack Student Grade Prediction & Academic Advising System built using Python, Streamlit, Scikit-Learn, and MongoDB Atlas.
+It was created as part of COSC 612 / AIT 624 – Assignment 5 (Implementation & Testing of the Whole System).
 
-**OVERVIEW**
+The system supports Admins, Teachers, and Students, providing prediction-driven insights and academic recommendations.
 
-The system enables:
+⭐ Key Features
 
-1.  Recording Student PerformanceTeachers can enter metrics such as attendance, study hours, stress level, and exam scores for each term.
-    
-2.  Predicting Student OutcomesA trained Machine Learning model (Random Forest Classifier) predicts whether a student is likely to pass or fail.
-    
-3.  Providing RecommendationsBased on prediction and performance data, the system offers actionable suggestions (e.g., increase study time, improve attendance).
-    
+    🔐 Authentication & Roles
 
-**TECHNOLOGIES USED**
+        Secure email + password login
 
-Frontend: StreamlitBackend / ML: Python 3.13, scikit-learn, pandas, numpy, joblibDatabase: SQLite (via SQLAlchemy ORM)Authentication & Utilities: passlib/bcrypt, pydanticVersion Control: Git & GitHub (feature branching workflow)
+        SHA-256 hashing + pepper for password protection
 
-**PROJECT STRUCTURE**
+        Three user roles: Admin, Teacher, Student
 
-student-grade-prediction/│├─ data/│ └─ Students\_Performance\_Dataset.csv│├─ db/│ ├─ schema.sql (Database design - tables, relations)│ └─ seed.sql (Optional starter data)│├─ models/│ ├─ model.pkl (Trained ML model - generated automatically)│ └─ feature\_schema.json (Input schema - auto-generated)│├─ src/│ ├─ **init**.py│ ├─ db.py (DB helper: schema creation, CRUD, model registry)│ ├─ train\_model.py (Trains RandomForest model and registers it)│ └─ app.py (Streamlit web app for record & prediction)│├─ .gitignore├─ environment.yml├─ requirements.txt└─ README.md
+    👨‍💼 1. Admin Features
 
-**IMPLEMENTATION SUMMARY**
+        Create Teacher and Student accounts
 
-Task 5 focused on Implementation, which includes:
+        View site-level academic performance summaries
 
-*   Building database schema (schema.sql)
-    
-*   Integrating backend (db.py for CRUD & model registry)
-    
-*   Training the machine learning model (train\_model.py)
-    
-*   Generating schema for dynamic UI fields (feature\_schema.json)
-    
-*   Creating Streamlit app (app.py) for end-to-end workflow
-    
-*   Achieving full database → model → UI → prediction integration
-    
+        Perform high-level data monitoring
 
-**MACHINE LEARNING MODEL**
+    👩‍🏫 2. Teacher Features
 
-Algorithm: Random Forest ClassifierPreprocessing: Imputation + One-Hot Encoding + Standard ScalingTarget: Pass (1) / Fail (0)
+        Create/update academic records
 
-Evaluation Results:Accuracy = 0.880F1 Score = 0.906ROC-AUC = 0.980
+        Record inputs such as:
 
-Artifacts:
+            Attendance
 
-*   models/model.pkl — serialized trained pipeline
-    
-*   models/feature\_schema.json — defines numeric vs categorical input fields
-    
+            Study hours
 
-**DATABASE SCHEMA OVERVIEW**
+            Exam score
 
-Tables Implemented:
+            Stress level
 
-users — Stores all user details (Admin, Teacher, Student)students — Links student accounts to user recordsteachers — Links teacher accounts to user recordsstudent\_academic\_data — Holds term-wise performance metricsml\_models — Registry of trained models (path, metrics)prediction\_results — Stores PASS/FAIL predictions and probabilitiesrecommendations — Stores generated feedback for each prediction
+            Sleep hours
 
-All tables are created using SQLite and automatically initialized through ensure\_schema().
+            Class participation
 
-**ENVIRONMENT SETUP**
+            Run PASS/FAIL predictions for advisees
 
-Step 1: Create Conda Environment
---------------------------------
+            View probability scores + feature-based risk explanation
 
-conda create -n gradepred python=3.13 -yconda activate gradepredpython --version
+            Send messages to students
 
-Step 2: Install Dependencies
-----------------------------
+            Review department-level performance
 
-conda install -c conda-forge streamlit scikit-learn pandas numpy joblib sqlalchemy pydantic bcrypt passlib python-dotenv
+    🧑‍🎓 3. Student Features
 
-(Optional) Export dependencies:python -m pip freeze > requirements.txtconda env export --from-history -n gradepred > environment.yml
+        View personal and academic profile
 
-Step 3: Initialize Database
----------------------------
+        Access latest academic record
 
-sqlite3 edutrack.db < db/schema.sqlsqlite3 edutrack.db ".tables"
+        See prediction result + probability
 
-(If sqlite3 is not installed, ensure\_schema() in src/db.py will auto-create tables.)
+        Receive personalised recommendations from the ML and rule engine
 
-Step 4: Train the Model
------------------------
+        Read messages from their assigned teacher
 
-python -m src.train\_model
+🤖 Machine Learning Pipeline
 
-Expected Output:✅ Saved model to models/model.pkl✅ Saved schema to models/feature\_schema.jsonMetrics -> acc=0.880, f1=0.906, roc\_auc=0.980
+    EduTrack uses an end-to-end ML pipeline built with Scikit-Learn:
 
-Step 5: Run the Streamlit Application
--------------------------------------
+    Model: RandomForestClassifier wrapped in a Pipeline
 
-streamlit run src/app.py
+    Training script: src/train_model.py
 
-Then in the app:
+    Trained model stored as models/model.pkl
 
-1.  Use sidebar → Create demo users (Admin, Teacher, Student)
-    
-2.  Record Student Performance → Fill attendance, study hours, exam score, etc.
-    
-3.  Save / Update record
-    
-4.  Predict Student Performance → Enter email & term → click Predict
-    
-5.  View PASS/FAIL + probability
-    
-6.  Review personalized recommendations
+    MongoDB maintains a model registry (metadata such as version, timestamp)
+
+    A rule-based advice engine converts weak indicators into human-readable recommendations
+    (e.g., low sleep → improve sleep schedule, low study hours → increase planned study time)
+
+    ✅ Important:
+        Before running the Streamlit app for the first time (or after you change training code/data),
+        you must run:
+
+        python -m src.train_model
+
+🗄 MongoDB Atlas Backend
+
+    EduTrack uses MongoDB Atlas as the primary database.
+    Main collections:
+
+        Collection	Purpose
+        users	Login credentials + roles
+        students	Student profile information
+        teachers	Teacher/advisor info
+        academic_records	Student grades & behaviour features
+        messages	Teacher ↔ Student communication
+        models	ML model metadata and registry
+
+    MongoDB access and logic live in:
+
+        src/app_db_mongo.py
+
+        src/mongo_client.py
+
+        (Older SQLite artifacts are kept only for legacy reference.)
+
+🧱 Technologies Used
+    Backend & Frontend
+
+    Python 3.10+
+
+    Streamlit
+
+    Database
+
+    MongoDB Atlas
+
+    pymongo + certifi for secure connection
+
+    Machine Learning & Data
+
+    scikit-learn
+
+    pandas, numpy
+
+    joblib
+
+    Configuration & Utilities
+
+    python-dotenv (.env loading)
+
+    Git + GitHub for version control and sprint-based branching
+
+📂 Project Structure
+    student-grade-prediction/
+    ├─ data/
+    │   └─ Students_Performance_Dataset.csv        # Training dataset
+    ├─ db/
+    │   └─ schema.sql                              # Legacy SQLite schema (unused at runtime)
+    ├─ models/
+    │   ├─ model.pkl                               # Trained ML pipeline (created by train_model.py)
+    │   └─ feature_schema.json                     # Feature columns used by the model
+    ├─ src/
+    │   ├─ app.py                                  # Main Streamlit application
+    │   ├─ app_db_mongo.py                         # MongoDB data access & business logic
+    │   ├─ mongo_client.py                         # MongoClient factory using MONGODB_URI
+    │   ├─ train_model.py                          # Training script (entrypoint for python -m src.train_model)
+    │   ├─ migrate_to_mongo.py                     # One-time SQLite → Mongo migration helper
+    │   ├─ mongo_smoke_test.py                     # Simple smoke test for Mongo connection
+    │   ├─ test_mongo.py                           # Minimal connectivity test
+    │   └─ __init__.py
+    ├─ requirements.txt
+    ├─ environment.yml                             # Optional Conda environment
+    ├─ .gitignore
+    └─ README.md
+
+⚙️ Installation & Setup
+    1️⃣ Clone the Repository
+        git clone https://github.com/your-username/student-grade-prediction.git
+        cd student-grade-prediction
+
+    2️⃣ Create and Activate Environment
+        Option A — Conda (recommended)
+            conda env create -f environment.yml
+            conda activate gradepred
+
+        Option B — pip
+            pip install -r requirements.txt
+
+    3️⃣ Configure MongoDB
+
+        Create a .env file in the project root:
+
+        MONGODB_URI="your-mongodb-atlas-connection-url"
+        MONGODB_DBNAME="edutrack"
+
+        Example:
+
+        MONGODB_URI="mongodb+srv://user:password@cluster.mongodb.net/?retryWrites=true&w=majority"
+        MONGODB_DBNAME="edutrack"
+
+        Make sure the MongoDB user has read/write permissions for the edutrack database, and your IP/network is allowed in Network Access.
+
+    4️⃣ Train the Model (First Time Only) ✅
+
+        Before running the app, train and register the ML model:
+
+        python -m src.train_model
+
+        This will:
+
+            Load data/Students_Performance_Dataset.csv
+
+            Train the RandomForest-based pipeline
+
+            Save models/model.pkl and models/feature_schema.json
+
+            Optionally register/update model metadata in the models collection
+
+        You only need to re-run this when:
+
+            You change the dataset
+
+            You update model/training code
+
+            You want to retrain using new data
+
+    5️⃣ Run the Streamlit Application
+
+        streamlit run src/app.py
+
+        Then open in your browser:
+
+        http://localhost:8501
+
+        Log in with an existing user (or create one via Admin functionality if seeded).
+
+🧪 Testing
+    Smoke Test MongoDB
+    python -m src.mongo_smoke_test
+
+    Basic Connectivity Test
+    python -m src.test_mongo
+
+
+    These help verify that:
+
+        Your .env is correctly configured
+
+        MongoDB Atlas is reachable
+
+        The app can read/write basic documents
+
+🔒 Security Notes
+
+    Passwords are hashed using:
+
+        SHA256(PEPPER + raw_password)
+
+        Comparison uses hmac.compare_digest to resist timing attacks
+
+        Secrets (DB URI, etc.) are never hard-coded; they live in .env
+
+🔮 Future Improvements
+
+    UI polish (charts, better dashboards, more filters)
+
+    Model explainability tools (e.g., feature importances per prediction)
+
+    Full CI/CD pipeline (GitHub Actions → Streamlit Cloud / container deploy)
+
+    Fine-grained role management and audit logging
+
+    Automatic model retraining workflow from the UI
+
+📄 License
+
+    MIT License — you are free to use, modify, and distribute this project.
+
+🙌 Contributors
+
+    EduTrack Development Team
+    Towson University — COSC 612 / AIT 624
