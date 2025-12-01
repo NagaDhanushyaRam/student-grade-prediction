@@ -260,4 +260,9 @@ The system supports Admins, Teachers, and Students, providing prediction-driven 
 🙌 Contributors
 
     EduTrack Development Team
-    Towson University — COSC 612 / AIT 624
+      - Naga Dhanushya Ram Munnanuru
+      - Ravinder Maini
+      - Muhammad Adam
+      - Stephen Aboagye-Ntow
+      - Ayandayo Adeleke
+    Towson University — COSC 612

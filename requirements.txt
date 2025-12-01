@@ -1,0 +1,8 @@
+streamlit
+numpy
+pandas
+scikit-learn
+joblib
+python-dotenv
+pymongo
+certifi

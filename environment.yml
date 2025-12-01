@@ -1,0 +1,16 @@
+name: gradepred
+channels:
+  - defaults
+dependencies:
+  - python=3.13
+  - pandas
+  - joblib
+  - python-dotenv
+  - streamlit
+  - scikit-learn
+  - passlib
+  - numpy
+  - bcrypt
+  - pydantic
+  - sqlalchemy
+prefix: C:\Users\nmunn\anaconda3\envs\gradepred
