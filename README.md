@@ -169,13 +169,8 @@ The system supports Admins, Teachers, and Students, providing prediction-driven 
 
         Create a .env file in the project root:
 
-        MONGODB_URI="your-mongodb-atlas-connection-url"
-        MONGODB_DBNAME="edutrack"
-
-        Example:
-
-        MONGODB_URI="mongodb+srv://user:password@cluster.mongodb.net/?retryWrites=true&w=majority"
-        MONGODB_DBNAME="edutrack"
+        MONGODB_URI = "mongodb+srv://public_user:PublicUser123@edutrack-cluster.9udzstg.mongodb.net/edutrackretryWrites=true&w=majority&authSource=admin&appName=edutrack-cluster"
+        MONGODB_DBNAME = "edutrack"
 
         Make sure the MongoDB user has read/write permissions for the edutrack database, and your IP/network is allowed in Network Access.
 
@@ -264,4 +259,5 @@ The system supports Admins, Teachers, and Students, providing prediction-driven 
       - Stephen Aboagye-Ntow
       - Ayandayo Adeleke
     Towson University — COSC 612
+
 
