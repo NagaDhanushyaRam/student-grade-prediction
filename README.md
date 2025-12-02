@@ -5,6 +5,9 @@ It was created as part of COSC 612 / AIT 624 – Assignment 5 (Implementation & 
 
 The system supports Admins, Teachers, and Students, providing prediction-driven insights and academic recommendations.
 
+Application Link: https://student-grade-prediction.streamlit.app/
+Demo Link: 
+
 ⭐ Key Features
 
     🔐 Authentication & Roles
@@ -265,6 +268,7 @@ The system supports Admins, Teachers, and Students, providing prediction-driven 
       - Stephen Aboagye-Ntow
       - Ayandayo Adeleke
     Towson University — COSC 612
+
 
 
 
